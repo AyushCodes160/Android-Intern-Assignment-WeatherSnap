@@ -1,7 +1,6 @@
 package com.weathersnap.ui.report
 
 import android.util.Log
-import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.weathersnap.data.repository.DraftRepository
@@ -17,7 +16,6 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -47,7 +45,6 @@ data class CreateReportUiState(
 @OptIn(FlowPreview::class)
 @HiltViewModel
 class CreateReportViewModel @Inject constructor(
-    private val savedStateHandle: SavedStateHandle,
     private val draftRepository: DraftRepository,
     private val reportRepository: ReportRepository,
     private val imageCompressor: ImageCompressor,
@@ -60,16 +57,16 @@ class CreateReportViewModel @Inject constructor(
     val events = _events.asSharedFlow()
 
     private var notesPersistJob: Job? = null
+    private var lastConsumedCapturePath: String? = null
 
     init {
         wireNotesPersistence()
-        observeCapturedImage()
     }
 
     /**
-     * Called by the screen on first composition with the snapshot that was passed in
-     * via navigation. We freeze that snapshot into a draft (one per draftId) so it
-     * survives rotation and process death without re-fetching.
+     * Freezes the incoming weather snapshot into a draft row (one per draftId) so the
+     * Create Report flow survives rotation, backgrounding, and process death without
+     * re-fetching weather, and without producing duplicate saved reports on save.
      */
     fun init(draftId: String, incomingSnapshotJson: String) {
         if (_state.value.draftId == draftId && _state.value.snapshot != null) return
@@ -97,6 +94,18 @@ class CreateReportViewModel @Inject constructor(
 
     fun onNotesChange(newNotes: String) {
         _state.value = _state.value.copy(notes = newNotes)
+    }
+
+    /**
+     * Called by the screen when the camera returns a captured file path. Idempotent —
+     * processing the same path twice is a no-op so an over-eager re-emit from the
+     * back-stack-entry SavedStateHandle (rotation, etc.) cannot double-compress.
+     */
+    fun onPhotoCaptured(rawFilePath: String) {
+        if (rawFilePath.isEmpty() || rawFilePath == lastConsumedCapturePath) return
+        lastConsumedCapturePath = rawFilePath
+        Log.d(TAG, "captured image path arrived: $rawFilePath")
+        viewModelScope.launch { handleCapturedPath(rawFilePath) }
     }
 
     fun onSave() {
@@ -144,25 +153,7 @@ class CreateReportViewModel @Inject constructor(
             .launchIn(viewModelScope)
     }
 
-    /**
-     * The camera screen writes the captured file path into the report screen's
-     * savedStateHandle, then pops back. We observe that key and process every
-     * non-null path exactly once. Set up in the VM `init` block so the observer
-     * is live regardless of when the draft finishes loading.
-     */
-    private fun observeCapturedImage() {
-        savedStateHandle.getStateFlow<String?>(KEY_CAPTURED_IMAGE, null)
-            .filter { !it.isNullOrEmpty() }
-            .onEach { path ->
-                Log.d(TAG, "captured image path arrived: $path")
-                savedStateHandle[KEY_CAPTURED_IMAGE] = null
-                handleCapturedPath(path!!)
-            }
-            .launchIn(viewModelScope)
-    }
-
     private suspend fun handleCapturedPath(rawFilePath: String) {
-        // Wait for the draft to be loaded so we have a draftId to attach the image to.
         val draftId = if (_state.value.draftId.isNotEmpty()) {
             _state.value.draftId
         } else {

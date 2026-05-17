@@ -6,6 +6,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -64,9 +66,21 @@ fun WeatherSnapNavHost() {
             val draftId = backStackEntry.arguments?.getString("draftId").orEmpty()
             val snapshotJson = backStackEntry.arguments?.getString("snapshotJson").orEmpty()
 
+            // Read directly from this entry's SavedStateHandle (not the @HiltViewModel one
+            // — they are different instances). The camera screen writes into this same
+            // handle on capture, so the flow below emits as soon as the photo is taken.
+            val capturedImagePath: String? by backStackEntry
+                .savedStateHandle
+                .getStateFlow(CreateReportViewModel.KEY_CAPTURED_IMAGE, null as String?)
+                .collectAsStateWithLifecycle()
+
             CreateReportScreen(
                 draftId = draftId,
                 incomingSnapshotJson = snapshotJson,
+                capturedImagePath = capturedImagePath,
+                onCapturedImageConsumed = {
+                    backStackEntry.savedStateHandle[CreateReportViewModel.KEY_CAPTURED_IMAGE] = null
+                },
                 onBack = { navController.popBackStack() },
                 onOpenCamera = { navController.navigate(Routes.CAMERA) },
                 onSaved = {

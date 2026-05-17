@@ -46,6 +46,8 @@ import java.io.File
 fun CreateReportScreen(
     draftId: String,
     incomingSnapshotJson: String,
+    capturedImagePath: String?,
+    onCapturedImageConsumed: () -> Unit,
     onBack: () -> Unit,
     onOpenCamera: () -> Unit,
     onSaved: () -> Unit,
@@ -56,6 +58,13 @@ fun CreateReportScreen(
 
     LaunchedEffect(draftId, incomingSnapshotJson) {
         viewModel.init(draftId, incomingSnapshotJson)
+    }
+
+    LaunchedEffect(capturedImagePath) {
+        if (!capturedImagePath.isNullOrEmpty()) {
+            viewModel.onPhotoCaptured(capturedImagePath)
+            onCapturedImageConsumed()
+        }
     }
 
     LaunchedEffect(Unit) {
