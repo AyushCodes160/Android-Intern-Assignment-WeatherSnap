@@ -1,5 +1,6 @@
 package com.weathersnap.ui.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -11,6 +12,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -39,11 +41,16 @@ fun PrimaryPillButton(
 fun SecondaryPillButton(
     text: String,
     modifier: Modifier = Modifier,
+    contentColor: Color = MaterialTheme.colorScheme.primary,
+    borderColor: Color = contentColor,
     onClick: () -> Unit,
 ) {
     OutlinedButton(
         onClick = onClick,
         modifier = modifier.height(40.dp),
         shape = RoundedCornerShape(20.dp),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = contentColor),
+        border = BorderStroke(1.dp, borderColor),
+        contentPadding = PaddingValues(horizontal = 20.dp),
     ) { Text(text, style = MaterialTheme.typography.labelLarge) }
 }

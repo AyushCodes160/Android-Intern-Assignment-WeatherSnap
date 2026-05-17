@@ -101,7 +101,12 @@ private fun HeaderCard(count: Int, onBack: () -> Unit) {
                     color = MaterialTheme.colorScheme.onPrimary,
                 )
             }
-            SecondaryPillButton(text = "Back", onClick = onBack)
+            SecondaryPillButton(
+                text = "Back",
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                borderColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.5f),
+                onClick = onBack,
+            )
         }
     }
 }
