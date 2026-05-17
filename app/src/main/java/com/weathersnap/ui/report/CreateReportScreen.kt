@@ -1,10 +1,5 @@
 package com.weathersnap.ui.report
 
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -89,6 +85,9 @@ fun CreateReportScreen(
             }
             PhotoCard(
                 imagePath = state.imagePath,
+                isProcessing = state.isProcessingPhoto,
+                originalBytes = state.originalImageBytes,
+                compressedBytes = state.compressedImageBytes,
                 onCapture = onOpenCamera,
             )
             NotesCard(
@@ -97,7 +96,7 @@ fun CreateReportScreen(
             )
             PrimaryPillButton(
                 text = if (state.isSaving) "Saving…" else "Save Report",
-                enabled = !state.isSaving && state.imagePath != null && state.snapshot != null,
+                enabled = !state.isSaving && !state.isProcessingPhoto && state.imagePath != null && state.snapshot != null,
                 onClick = viewModel::onSave,
             )
             Spacer(Modifier.height(8.dp))
@@ -127,7 +126,14 @@ private fun HeaderCard(onBack: () -> Unit) {
 }
 
 @Composable
-private fun PhotoCard(imagePath: String?, onCapture: () -> Unit) {
+private fun PhotoCard(
+    imagePath: String?,
+    isProcessing: Boolean,
+    originalBytes: Long,
+    compressedBytes: Long,
+    onCapture: () -> Unit,
+) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     SurfaceCard(padding = PaddingValues(12.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Box(
@@ -138,32 +144,57 @@ private fun PhotoCard(imagePath: String?, onCapture: () -> Unit) {
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
                 contentAlignment = Alignment.Center,
             ) {
-                AnimatedContent(
-                    targetState = imagePath,
-                    transitionSpec = { (fadeIn() + scaleIn(initialScale = 0.96f)).togetherWith(fadeOut()) },
-                    label = "photo-preview",
-                ) { path ->
-                    if (path != null) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(androidx.compose.ui.platform.LocalContext.current)
-                                .data(File(path))
-                                .build(),
-                            contentDescription = "Captured photo",
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop,
-                        )
-                    } else {
+                when {
+                    isProcessing -> Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                         Text(
-                            "Photo preview",
-                            style = MaterialTheme.typography.titleMedium,
+                            "Compressing…",
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                     }
+                    imagePath != null -> AsyncImage(
+                        model = ImageRequest.Builder(ctx)
+                            .data(File(imagePath))
+                            .build(),
+                        contentDescription = "Captured photo",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                    else -> Text(
+                        "Photo preview",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+            if (imagePath != null && originalBytes > 0) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    com.weathersnap.ui.components.MetricChip(
+                        label = "Original",
+                        value = formatBytes(originalBytes),
+                        modifier = Modifier.weight(1f),
+                    )
+                    com.weathersnap.ui.components.MetricChip(
+                        label = "Compressed",
+                        value = formatBytes(compressedBytes),
+                        modifier = Modifier.weight(1f),
+                    )
                 }
             }
             PrimaryPillButton(text = "Capture Photo", onClick = onCapture)
         }
     }
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes <= 0L) return "—"
+    val kb = bytes / 1024.0
+    return if (kb < 1024) String.format(java.util.Locale.getDefault(), "%.1f KB", kb)
+    else String.format(java.util.Locale.getDefault(), "%.2f MB", kb / 1024.0)
 }
 
 @Composable

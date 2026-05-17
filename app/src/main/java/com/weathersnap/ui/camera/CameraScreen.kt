@@ -2,6 +2,7 @@ package com.weathersnap.ui.camera
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -24,6 +25,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -82,6 +85,9 @@ fun CameraScreen(
     val imageCapture = remember { ImageCapture.Builder().build() }
     val executor: Executor = remember { ContextCompat.getMainExecutor(context) }
 
+    var capturing by remember { mutableStateOf(false) }
+    val snackbar = remember { SnackbarHostState() }
+
     DisposableEffect(hasPermission) {
         if (!hasPermission) return@DisposableEffect onDispose {}
         val providerFuture = ProcessCameraProvider.getInstance(context)
@@ -98,6 +104,19 @@ fun CameraScreen(
                     preview,
                     imageCapture,
                 )
+            }.onFailure { err ->
+                Log.e("CameraScreen", "bindToLifecycle failed; trying front camera", err)
+                runCatching {
+                    provider.bindToLifecycle(
+                        lifecycleOwner,
+                        CameraSelector.DEFAULT_FRONT_CAMERA,
+                        preview,
+                        imageCapture,
+                    )
+                }.onFailure { err2 ->
+                    Log.e("CameraScreen", "front camera also failed", err2)
+                    scope.launch { snackbar.showSnackbar("Camera unavailable: ${err2.message}") }
+                }
             }
         }, executor)
         onDispose {
@@ -105,9 +124,10 @@ fun CameraScreen(
         }
     }
 
-    var capturing by remember { mutableStateOf(false) }
-
-    Scaffold(containerColor = MaterialTheme.colorScheme.background) { inner ->
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snackbar) },
+    ) { inner ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -143,10 +163,15 @@ fun CameraScreen(
                     scope.launch {
                         runCatching { takePicture(context, imageCapture, executor) }
                             .onSuccess { path ->
+                                Log.d("CameraScreen", "captured -> $path")
                                 capturing = false
                                 onCaptured(path)
                             }
-                            .onFailure { capturing = false }
+                            .onFailure { err ->
+                                Log.e("CameraScreen", "capture failed", err)
+                                capturing = false
+                                snackbar.showSnackbar("Capture failed: ${err.message ?: err::class.simpleName}")
+                            }
                     }
                 },
             )

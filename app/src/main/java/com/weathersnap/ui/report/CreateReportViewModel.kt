@@ -1,5 +1,6 @@
 package com.weathersnap.ui.report
 
+import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -16,12 +17,16 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import java.io.File
 import javax.inject.Inject
+
+private const val TAG = "CreateReportVM"
 
 sealed interface CreateReportEvent {
     data object Saved : CreateReportEvent
@@ -36,6 +41,7 @@ data class CreateReportUiState(
     val originalImageBytes: Long = 0L,
     val compressedImageBytes: Long = 0L,
     val isSaving: Boolean = false,
+    val isProcessingPhoto: Boolean = false,
 )
 
 @OptIn(FlowPreview::class)
@@ -50,10 +56,15 @@ class CreateReportViewModel @Inject constructor(
     private val _state = MutableStateFlow(CreateReportUiState())
     val state = _state.asStateFlow()
 
-    private val _events = MutableSharedFlow<CreateReportEvent>(extraBufferCapacity = 1)
+    private val _events = MutableSharedFlow<CreateReportEvent>(extraBufferCapacity = 4)
     val events = _events.asSharedFlow()
 
     private var notesPersistJob: Job? = null
+
+    init {
+        wireNotesPersistence()
+        observeCapturedImage()
+    }
 
     /**
      * Called by the screen on first composition with the snapshot that was passed in
@@ -64,57 +75,28 @@ class CreateReportViewModel @Inject constructor(
         if (_state.value.draftId == draftId && _state.value.snapshot != null) return
 
         viewModelScope.launch {
-            val incoming: WeatherSnapshot =
-                Json { ignoreUnknownKeys = true }.decodeFromString(incomingSnapshotJson)
-            val draft = draftRepository.getOrCreate(draftId, incoming)
-            val frozen = draftRepository.decodeSnapshot(draft)
-            _state.value = CreateReportUiState(
-                draftId = draft.id,
-                snapshot = frozen,
-                notes = draft.notes,
-                imagePath = draft.imagePath,
-                originalImageBytes = draft.originalImageBytes,
-                compressedImageBytes = draft.compressedImageBytes,
-            )
-            wireNotesPersistence()
-            observeCapturedImage()
+            runCatching {
+                val incoming: WeatherSnapshot =
+                    Json { ignoreUnknownKeys = true }.decodeFromString(incomingSnapshotJson)
+                val draft = draftRepository.getOrCreate(draftId, incoming)
+                val frozen = draftRepository.decodeSnapshot(draft)
+                _state.value = _state.value.copy(
+                    draftId = draft.id,
+                    snapshot = frozen,
+                    notes = draft.notes,
+                    imagePath = draft.imagePath,
+                    originalImageBytes = draft.originalImageBytes,
+                    compressedImageBytes = draft.compressedImageBytes,
+                )
+            }.onFailure {
+                Log.e(TAG, "init failed", it)
+                _events.tryEmit(CreateReportEvent.Error("Could not load draft: ${it.message}"))
+            }
         }
     }
 
     fun onNotesChange(newNotes: String) {
         _state.value = _state.value.copy(notes = newNotes)
-    }
-
-    /**
-     * Compresses the captured photo and updates the draft. The result of the camera
-     * screen is also written to savedStateHandle["captured_image_path"] by the nav
-     * graph; this is the single entry point so duplicate captures cannot occur.
-     */
-    fun onPhotoCaptured(rawFilePath: String) {
-        viewModelScope.launch {
-            val draftId = _state.value.draftId
-            if (draftId.isEmpty()) return@launch
-            val raw = File(rawFilePath)
-            if (!raw.exists()) return@launch
-            runCatching { imageCompressor.compress(raw) }
-                .onSuccess { result ->
-                    runCatching { raw.delete() }
-                    draftRepository.updateImage(
-                        draftId = draftId,
-                        imagePath = result.compressedFile.absolutePath,
-                        originalBytes = result.originalBytes,
-                        compressedBytes = result.compressedBytes,
-                    )
-                    _state.value = _state.value.copy(
-                        imagePath = result.compressedFile.absolutePath,
-                        originalImageBytes = result.originalBytes,
-                        compressedImageBytes = result.compressedBytes,
-                    )
-                }
-                .onFailure {
-                    _events.tryEmit(CreateReportEvent.Error(it.message ?: "Image processing failed"))
-                }
-        }
     }
 
     fun onSave() {
@@ -129,7 +111,6 @@ class CreateReportViewModel @Inject constructor(
         _state.value = s.copy(isSaving = true)
         viewModelScope.launch {
             runCatching {
-                // Persist any final notes that may not yet have been written.
                 draftRepository.updateNotes(s.draftId, s.notes)
                 reportRepository.saveReport(
                     draftId = s.draftId,
@@ -142,6 +123,7 @@ class CreateReportViewModel @Inject constructor(
             }
                 .onSuccess { _events.tryEmit(CreateReportEvent.Saved) }
                 .onFailure {
+                    Log.e(TAG, "save failed", it)
                     _state.value = _state.value.copy(isSaving = false)
                     _events.tryEmit(CreateReportEvent.Error(it.message ?: "Save failed"))
                 }
@@ -154,20 +136,72 @@ class CreateReportViewModel @Inject constructor(
             .drop(1)
             .debounce(400L)
             .onEach { s ->
-                if (s.draftId.isNotEmpty()) draftRepository.updateNotes(s.draftId, s.notes)
+                if (s.draftId.isNotEmpty()) {
+                    runCatching { draftRepository.updateNotes(s.draftId, s.notes) }
+                        .onFailure { Log.e(TAG, "notes persist failed", it) }
+                }
             }
             .launchIn(viewModelScope)
     }
 
+    /**
+     * The camera screen writes the captured file path into the report screen's
+     * savedStateHandle, then pops back. We observe that key and process every
+     * non-null path exactly once. Set up in the VM `init` block so the observer
+     * is live regardless of when the draft finishes loading.
+     */
     private fun observeCapturedImage() {
         savedStateHandle.getStateFlow<String?>(KEY_CAPTURED_IMAGE, null)
+            .filter { !it.isNullOrEmpty() }
             .onEach { path ->
-                if (!path.isNullOrEmpty()) {
-                    savedStateHandle[KEY_CAPTURED_IMAGE] = null
-                    onPhotoCaptured(path)
-                }
+                Log.d(TAG, "captured image path arrived: $path")
+                savedStateHandle[KEY_CAPTURED_IMAGE] = null
+                handleCapturedPath(path!!)
             }
             .launchIn(viewModelScope)
+    }
+
+    private suspend fun handleCapturedPath(rawFilePath: String) {
+        // Wait for the draft to be loaded so we have a draftId to attach the image to.
+        val draftId = if (_state.value.draftId.isNotEmpty()) {
+            _state.value.draftId
+        } else {
+            Log.d(TAG, "waiting for draftId before processing capture")
+            _state.first { it.draftId.isNotEmpty() }.draftId
+        }
+
+        val raw = File(rawFilePath)
+        if (!raw.exists()) {
+            Log.e(TAG, "raw capture missing at $rawFilePath")
+            _events.tryEmit(CreateReportEvent.Error("Captured photo file is missing"))
+            return
+        }
+
+        _state.value = _state.value.copy(isProcessingPhoto = true)
+        runCatching { imageCompressor.compress(raw) }
+            .onSuccess { result ->
+                runCatching { raw.delete() }
+                runCatching {
+                    draftRepository.updateImage(
+                        draftId = draftId,
+                        imagePath = result.compressedFile.absolutePath,
+                        originalBytes = result.originalBytes,
+                        compressedBytes = result.compressedBytes,
+                    )
+                }
+                _state.value = _state.value.copy(
+                    imagePath = result.compressedFile.absolutePath,
+                    originalImageBytes = result.originalBytes,
+                    compressedImageBytes = result.compressedBytes,
+                    isProcessingPhoto = false,
+                )
+                Log.d(TAG, "photo processed: ${result.compressedFile.absolutePath}")
+            }
+            .onFailure {
+                Log.e(TAG, "image processing failed", it)
+                _state.value = _state.value.copy(isProcessingPhoto = false)
+                _events.tryEmit(CreateReportEvent.Error("Image processing failed: ${it.message}"))
+            }
     }
 
     companion object { const val KEY_CAPTURED_IMAGE = "captured_image_path" }
