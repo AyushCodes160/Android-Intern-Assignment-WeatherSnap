@@ -100,10 +100,16 @@ the screen the notes are reloaded from the draft.
 
 **4. The captured image survives rotation too.** When the camera screen returns,
 it writes the file path into the report screen's nav `SavedStateHandle`. The
-ViewModel observes that key as a `StateFlow` (so a second capture from the same
-screen is also picked up) and consumes it idempotently: compress → write file
-path back to the draft row → clear the savedStateHandle key. The image path
-lives in the draft, so rotation can't lose it.
+NavHost reads that key as a `StateFlow` from `backStackEntry.savedStateHandle`
+(note: not from a Hilt-injected `SavedStateHandle` — those are different
+instances even when backed by the same registry, so writes to one don't trigger
+`getStateFlow` listeners on the other), passes the latest value to
+`CreateReportScreen`, which forwards it to `CreateReportViewModel.onPhotoCaptured()`
+via a `LaunchedEffect`. The ViewModel keeps a `lastConsumedCapturePath` guard
+so a re-emit (rotation, recomposition) cannot double-process the same file. It
+compresses → writes the compressed file path back to the draft row → the screen
+clears the savedStateHandle key. The image path lives in the draft, so rotation
+can't lose it.
 
 **5. Temp files are not allowed to leak.**
 - The raw capture file is deleted as soon as compression succeeds.
@@ -132,9 +138,17 @@ No splash screen, login, onboarding, or settings page — per the spec.
 - Debug-only network logging (gated by `BuildConfig.DEBUG`).
 - Room writes/reads run on `Dispatchers.IO` end-to-end.
 
+## Diagnostics
+
+If something misbehaves at runtime, check Logcat with `package:mine`. The
+capture pipeline logs at every step under the tags `CameraScreen` and
+`CreateReportVM` (bind/capture/path/compression). Camera bind failures fall
+back from the back camera to the front camera so the app still works on
+emulators with limited camera hardware.
+
 ## Screen recording
 
-Record `device-2024…mp4` from Android Studio's *Logcat → Screen Record* showing:
+Record an mp4 from the emulator's screen-record control showing:
 city autocomplete → weather search → create report → custom camera → image
-compression sizes (visible on the saved report card) → notes entry → save →
-saved reports list.
+compression sizes (visible both on the create-report card and on the saved
+report card) → notes entry → save → saved reports list.
